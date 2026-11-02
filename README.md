@@ -1,114 +1,77 @@
 # IT Support Agent
 
-A completed proof-of-concept IT support assistant built with retrieval-augmented generation (RAG), local vector search, and an MCP orchestration layer.
+An agentic IT helpdesk assistant built on retrieval-augmented generation (RAG) and an MCP tool layer. It answers questions from a knowledge base, and when a question needs action it can open tickets and notify Slack through an MCP server.
 
-## What this project does
+## What it does
 
-- Ingests IT support text documents into a local Chroma vector database.
-- Retrieves relevant content for user questions using embeddings.
-- Generates contextual IT support answers with Gemini LLMs.
-- Supports a lightweight MCP server to simulate tool-enabled workflows such as ticket creation and Slack notifications.
-- Includes evaluation tooling for assessing retrieval and answer quality.
+- **Retrieves** relevant support content from a local ChromaDB vector store using Gemini embeddings
+- **Answers** with Gemini (`gemini-2.0-flash`), grounded in the retrieved context
+- **Acts** through a FastMCP server exposing `create_ticket`, `check_ticket_status` and `notify_slack` (mock backends, designed to be swapped for real APIs)
+- **Orchestrates** with a Plan → Act → Respond loop that decides whether to retrieve, call a tool, or answer
+- **Filters tickets** in two layers: deterministic rules first, then an LLM-as-judge for ambiguous cases
+- **Evaluates** answer quality against ground-truth test cases
+
+<!-- Add an example session here: a user question, the tool calls made, and the final answer. -->
 
 ## Architecture
 
 ```
-question ─► rewrite follow-ups (history) ─► embed as RETRIEVAL_QUERY ─► Chroma top-3
-        ─► similarity < MIN_RELEVANCE? ─► yes: refuse + escalate (no LLM guessing)
-        ─► no: Gemini answers from context only ─► Gemini picks tools (schema-constrained JSON)
-        ─► MCP client ─► create_ticket / check_ticket_status / notify_slack
+User question
+    ↓
+[Orchestrator]  Plan → Act → Respond
+    ├── retrieve  → ChromaDB (Gemini embeddings)
+    └── act       → MCP server: create_ticket / check_ticket_status / notify_slack
+    ↓
+Grounded answer
 ```
 
-## Repository structure
+## Project structure
 
-- `config.py` — models, thresholds, the shared Gemini client, and a retry wrapper for transient API errors.
-- `phase1_ingest.py` — loads `data/*.txt`, chunks by section, embeds (batched, `RETRIEVAL_DOCUMENT`), stores in `db/`.
-- `phase1_rag.py` — retrieval (query rewriting, cosine scores, relevance guardrail) and answer generation.
-- `mcp_server.py` — MCP server with `create_ticket`, `check_ticket_status`, `notify_slack`; tickets persist to `tickets.json`.
-- `orchestrator.py` — RAG, then an LLM routing decision, then MCP tool calls over one long-lived session.
-- `evaluate_rag.py` — retrieval metrics (hit rate, MRR), refusal check, and LLM-as-judge faithfulness/relevancy.
-- `test_mcp.py` — smoke test for the MCP server, including ticket persistence across processes.
-- `data/` — the sample knowledge base (committed so the project is reproducible).
-
-## Design decisions
-
-- **Section-aware chunking.** The KB is written as self-contained "Issue + steps" sections, so we split on `---` rather than fixed character windows, which cut procedures mid-step. Only oversized sections fall back to an overlapping window.
-- **Asymmetric embeddings.** Documents use `RETRIEVAL_DOCUMENT`, queries use `RETRIEVAL_QUERY`.
-- **Refusal guardrail.** If the best chunk's cosine similarity is below `MIN_RELEVANCE` (0.62, calibrated on this KB: in-scope 0.66–0.74, out-of-scope 0.51–0.60), the LLM is skipped and the request is escalated to a ticket.
-- **Structured routing.** The tool decision uses a response schema with `temperature=0`, instead of parsing free text with a regex.
-- **MCP stdio.** stdout is the protocol channel, so the server logs to stderr only.
-- **Separate judge.** Evaluation uses a different model from the generator (`JUDGE_MODEL` env var overrides it).
-
-## Known limitations
-
-- Tiny knowledge base (6 chunks) and 7 eval cases: metrics are a rough signal, not a benchmark.
-- The relevance threshold is tuned on very few examples and must be re-checked when the KB or embedding model changes.
-- Ticketing and Slack are mocks (JSON file / log line).
-- Retrieval is dense-only; there is no keyword (BM25) or reranking stage.
-
-## Prerequisites
-
-- Python 3.13+ (recommended)
-- `pip` or `venv` support
-- A Gemini API key stored in a `.env` file as `GEMINI_API_KEY`
+| File | Purpose |
+| --- | --- |
+| `phase1_ingest.py` | Loads `data/*.txt`, chunks content, embeds it, stores it in `db/` |
+| `phase1_rag.py` | Query loop: retrieves top-K context and generates answers |
+| `mcp_server.py` | MCP tool server (ticket creation, status, Slack notification) |
+| `orchestrator.py` | Combines retrieval, reasoning and tool calls via MCP |
+| `evalute_rag.py` | Scores RAG answers against ground-truth test cases |
+| `data/` | Source knowledge documents (`.txt`) |
+| `db/` | Local ChromaDB storage (generated) |
 
 ## Setup
 
-1. Create and activate a virtual environment, then install dependencies:
+Requires Python 3.10+ and a Gemini API key.
 
 ```bash
-python -m venv it-agent && source it-agent/bin/activate
+git clone https://github.com/Prathamesh0309/it-support-agent
+cd it-support-agent
+python -m venv venv
+source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-2. Create a `.env` file with your Gemini API key:
+Create a `.env` file:
 
-```text
+```
 GEMINI_API_KEY=your_api_key_here
 ```
 
 ## Usage
 
-### 1. Ingest knowledge into ChromaDB
-
 ```bash
-python phase1_ingest.py
+python phase1_ingest.py    # 1. build the vector store from data/
+python phase1_rag.py       # 2. ask questions (RAG only)
+python orchestrator.py     # 3. full agent: retrieval + tool actions
+python evalute_rag.py      # 4. run the evaluation
 ```
 
-This reads the text files in `data/`, chunks them, embeds them via Gemini, and stores them in `db/`.
+## Evaluation
 
-### 2. Run a RAG query session
+`evalute_rag.py` runs predefined test cases and scores generated answers against ground truth.
 
-```bash
-python phase1_rag.py
-```
+<!-- Add your results here: number of test cases and the score or pass rate. -->
 
-This starts a prompt loop where you can ask IT support questions and receive answers grounded in your knowledge base.
+## Notes and next steps
 
-### 3. Run the MCP orchestrator
-
-```bash
-python orchestrator.py
-```
-
-This launches an interactive session that performs retrieval, reasoning, and tool actions such as ticket creation and Slack notifications.
-
-### 4. Evaluate RAG performance
-
-```bash
-python evaluate_rag.py
-```
-
-Reports retrieval hit rate/MRR, out-of-scope refusal accuracy, and LLM-judged faithfulness and relevancy.
-
-## Quick command summary
-
-```bash
-python -m venv it-agent && source it-agent/bin/activate
-pip install -r requirements.txt
-python phase1_ingest.py
-python phase1_rag.py
-python orchestrator.py
-python evaluate_rag.py
-python test_mcp.py   # MCP smoke test
-```
+- Gemini is used for both embeddings and generation
+- MCP tools are mocks; replace them with real ticketing and Slack integrations
+- Next: richer chunking and metadata for retrieval, more knowledge sources in `data/`, and tests for tool invocation and end-to-end behavior
