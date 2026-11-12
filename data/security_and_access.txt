@@ -1,0 +1,49 @@
+SECURITY & ACCESS
+=================
+
+Issue: I received a suspicious email
+--------------------------------------
+1. Do not click links or open attachments
+2. Use the Report Phish button in Outlook, or forward the message as an attachment to security@company.com
+3. If you already clicked a link or entered your password, change your password straight away at accounts.company.com/reset and call ext. 4357
+
+---
+
+Issue: Laptop lost or stolen
+------------------------------
+1. Report it within 1 hour to security@company.com and call ext. 4357
+2. IT will lock the account and remotely wipe the device
+3. For theft, also file a police report and send the report number to Security
+4. A replacement is issued after the report is logged
+
+---
+
+Issue: New phone and MFA codes stopped working
+------------------------------------------------
+- MFA uses the Microsoft Authenticator app, and codes do not move to a new phone automatically
+- Go to accounts.company.com/mfa and re-register the new phone using one of your backup codes
+- If you have no backup codes, IT verifies your identity through your manager, which takes up to 4 hours
+
+---
+
+Issue: Alert about a sign-in from an unrecognized location
+------------------------------------------------------------
+- This alert means your account was used from a place or device we have not seen before
+- If it was you, for example while travelling, no action is needed
+- If it was not you, choose "This wasn't me", reset your password immediately and tell security@company.com
+
+---
+
+Issue: USB drives and external storage are blocked
+----------------------------------------------------
+- USB storage is blocked by default to prevent data loss
+- Use OneDrive to move files instead
+- If you have a business need, request an exception at it-portal.company.com with your manager's approval
+
+---
+
+Issue: Laptop asks for a disk encryption recovery key
+-------------------------------------------------------
+- Windows laptops use BitLocker and Macs use FileVault
+- After signing in with MFA, find your recovery key at it-portal.company.com/recovery
+- Never share the recovery key with anyone, including IT staff who contact you unprompted

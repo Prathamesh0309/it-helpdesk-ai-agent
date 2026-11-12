@@ -1,0 +1,44 @@
+NETWORK & PRINTING
+==================
+
+Issue: Printer shows as offline
+---------------------------------
+1. Confirm the printer is powered on and shows no error on its screen
+2. Windows: Settings → Printers & scanners, remove the printer, then add it again by name (printer names look like PRN-3-02, floor then number)
+3. Mac: System Settings → Printers & Scanners, remove it and add it again
+4. If many people on your floor see it offline, report it in Slack #it-help with the printer name
+
+---
+
+Issue: Cannot connect to the office Wi-Fi
+-------------------------------------------
+- Company laptops use the CorpWiFi network and sign in with your company email and password
+- Personal phones and visitors must use CorpGuest, which gives internet access only
+- If you changed your password recently, forget the CorpWiFi network and reconnect so the old password is not reused
+- Still failing? Move closer to an access point and try again before contacting IT
+
+---
+
+Issue: Wi-Fi is slow or drops in a meeting room
+-------------------------------------------------
+1. Switch your laptop to the 5GHz network if it offers a choice
+2. Every meeting room has a wired dock port; plugging in is the most reliable fix for video calls
+3. Report the room name and time to Slack #it-help so IT can check the access point
+
+---
+
+Issue: Shared drive is not showing up
+---------------------------------------
+- You must be on the office network or connected to the VPN
+- Windows: open This PC → Map network drive and enter \\fileserver\team
+- Mac: in Finder press Cmd+K and enter smb://fileserver/team
+- Sign in with your company email if asked for credentials
+
+---
+
+Issue: Bluetooth headset will not pair
+----------------------------------------
+1. Turn Bluetooth off and on again on your laptop
+2. Remove the headset from the paired devices list
+3. Hold the headset power button for 5 seconds until the light flashes to enter pairing mode
+4. Pair it again and select it as the audio device in Zoom or Teams

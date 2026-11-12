@@ -3,14 +3,22 @@ from functools import lru_cache
 import chromadb
 
 from config import (
+    CANDIDATE_POOL,
     CHROMA_DIR,
     COLLECTION_NAME,
     GENERATION_MODEL,
     MIN_RELEVANCE,
+    RETRIEVAL_MODE,
+    RRF_K,
     TOP_K,
     generate,
 )
+from observability import span
 from phase1_ingest import GeminiEmbeddingFunction
+from rag.bm25 import BM25
+from rag.fusion import fuse_chunks
+
+MODES = ("dense", "bm25", "hybrid")
 
 FALLBACK_ANSWER = (
     "I don't have information about that. Please contact it-support@company.com"
@@ -60,32 +68,89 @@ STANDALONE QUERY:"""
     return (response.text or "").strip() or query
 
 
-def retrieve(query, history=None):
-    """Return the top-K chunks for a query, each with a cosine similarity score."""
-    search_query = rewrite_query(query, history or [])
+@lru_cache(maxsize=1)
+def load_lexical_index():
+    """BM25 index built from the chunks already in Chroma, so the two can never disagree."""
+    data = load_collection().get(include=["documents", "metadatas"])
+    chunks = [
+        {"id": i, "text": doc, "source": meta["source"], "title": meta.get("title", ""), "score": None}
+        for i, doc, meta in zip(data["ids"], data["documents"], data["metadatas"])
+    ]
+    return BM25([c["text"] for c in chunks]), chunks
 
-    results = load_collection().query(
+
+def dense_search(search_query, n):
+    collection = load_collection()
+    results = collection.query(
         # Embed explicitly as a *query* so the RETRIEVAL_QUERY task type is used.
         query_embeddings=_embedder.embed_query([search_query]),
-        n_results=TOP_K,
+        n_results=min(n, collection.count()),
         include=["documents", "metadatas", "distances"],
     )
-
     return [
         {
+            "id": chunk_id,
             "text": doc,
             "source": meta["source"],
+            "title": meta.get("title", ""),
             # Chroma returns cosine *distance*; similarity = 1 - distance.
             "score": round(1 - dist, 3),
         }
-        for doc, meta, dist in zip(
-            results["documents"][0], results["metadatas"][0], results["distances"][0]
+        for chunk_id, doc, meta, dist in zip(
+            results["ids"][0], results["documents"][0], results["metadatas"][0], results["distances"][0]
         )
     ]
 
 
+def lexical_search(search_query, n):
+    bm25, chunks = load_lexical_index()
+    return [{**chunks[i], "bm25": round(score, 3)} for i, score in bm25.search(search_query, n)]
+
+
+def retrieve(query, history=None, mode=None):
+    """Return the top-K chunks for a query.
+
+    mode: "dense" (embeddings), "bm25" (lexical) or "hybrid" (both, fused with
+    Reciprocal Rank Fusion). Defaults to RETRIEVAL_MODE.
+    """
+    mode = mode or RETRIEVAL_MODE
+    if mode not in MODES:
+        raise ValueError(f"unknown retrieval mode {mode!r}; choose from {MODES}")
+
+    search_query = rewrite_query(query, history or [])
+
+    with span("retrieve", mode=mode) as s:
+        dense = dense_search(search_query, CANDIDATE_POOL) if mode != "bm25" else []
+        lexical = lexical_search(search_query, CANDIDATE_POOL) if mode != "dense" else []
+
+        if mode == "dense":
+            chunks = dense[:TOP_K]
+        elif mode == "bm25":
+            chunks = lexical[:TOP_K]
+        else:
+            chunks = fuse_chunks(dense, lexical, k=RRF_K, top_k=TOP_K)
+
+        s.set(
+            sources=[c["source"] for c in chunks],
+            top_dense_score=max((c["score"] for c in chunks if c.get("score") is not None), default=None),
+            relevant=is_relevant(chunks),
+            query_rewritten=search_query != query,
+        )
+    return chunks
+
+
 def is_relevant(chunks):
-    return bool(chunks) and chunks[0]["score"] >= MIN_RELEVANCE
+    """The guardrail: is anything we retrieved close enough to answer from?
+
+    Uses dense cosine similarity, which is calibrated (see MIN_RELEVANCE). BM25
+    scores have no absolute scale, so chunks only the lexical side found carry
+    score=None and are skipped; in BM25-only mode there is no cosine to check, so
+    any match counts.
+    """
+    if not chunks:
+        return False
+    scores = [c["score"] for c in chunks if c.get("score") is not None]
+    return max(scores) >= MIN_RELEVANCE if scores else True
 
 
 def generate_answer(query, chunks, history=None):
@@ -127,9 +192,9 @@ def rag_query(query, history=None):
 
     chunks = retrieve(query, history)
 
-    print(f"\nTop {TOP_K} retrieved chunks:")
+    print(f"\nTop {TOP_K} retrieved chunks ({RETRIEVAL_MODE}):")
     for i, c in enumerate(chunks, 1):
-        print(f"  {i}. [{c['source']}] score={c['score']}")
+        print(f"  {i}. [{c['source']}] score={c.get('score')}")
         print(f"     \"{c['text'][:80]}...\"")
 
     return generate_answer(query, chunks, history)

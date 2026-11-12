@@ -1,0 +1,29 @@
+name: live-eval
+
+# Manual run. Needs a GEMINI_API_KEY repository secret; calls the live API.
+on:
+  workflow_dispatch:
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    env:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      TRACING: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - run: pip install -r requirements.txt
+      - run: python phase1_ingest.py
+      - name: Compare dense, bm25 and hybrid retrieval
+        run: python evaluate_rag.py --compare --json eval-compare.json
+      - name: Full evaluation with LLM judge
+        run: python evaluate_rag.py --json eval-full.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: eval-results
+          path: eval-*.json
