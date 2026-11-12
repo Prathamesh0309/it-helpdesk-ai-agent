@@ -33,8 +33,11 @@ COLLECTION_NAME = "it_knowledge_base"
 # bm25   = lexical only (rag/bm25.py)
 # hybrid = both, merged with Reciprocal Rank Fusion
 RETRIEVAL_MODE = os.getenv("RETRIEVAL_MODE", "hybrid")
-# section = split on the knowledge base's own '---' boundaries; fixed = sliding window
-CHUNKING = os.getenv("CHUNKING", "section")
+# structure = split on each document's own headings (.md, numbered PDF headings, '---'
+#             blocks in .txt) and prefix a "Document > Section" header; the default
+# section   = split on '---' only (on PDFs/markdown this is just a sliding window)
+# fixed     = plain sliding window, the baseline
+CHUNKING = os.getenv("CHUNKING", "structure")
 RRF_K = 60
 # How many candidates each retriever contributes before fusion.
 CANDIDATE_POOL = 50
@@ -43,7 +46,8 @@ TOP_K = 3
 # and escalate instead of letting it improvise.
 # Calibrated empirically on the original two-document KB: in-scope questions
 # scored 0.66-0.74, out-of-scope ones 0.51-0.60, so 0.62 sat in the gap. The KB has
-# grown since: re-check with `python evaluate_rag.py --compare` and adjust.
+# grown since (now ~65 chunks across txt/md/pdf): recalibrate with
+# `python evaluate_rag.py --calibrate` and update this value.
 MIN_RELEVANCE = 0.62
 
 

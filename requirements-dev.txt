@@ -1,2 +1,3 @@
 -r requirements.txt
 pytest>=8.0
+fpdf2>=2.7  # only to regenerate the sample PDFs: tools/generate_policy_pdfs.py

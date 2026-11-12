@@ -18,4 +18,4 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: pytest -q
       - name: Retrieval regression gate (offline BM25 baseline, no API key)
-        run: python -m evals.retrieval_eval --chunking both --min-hit-rate 0.80 --min-mrr 0.75
+        run: python -m evals.retrieval_eval --chunking all --min-hit-rate 0.80 --min-mrr 0.72

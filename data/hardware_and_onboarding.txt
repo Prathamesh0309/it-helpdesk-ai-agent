@@ -1,0 +1,60 @@
+NEW EMPLOYEE SETUP & HARDWARE
+=============================
+
+Issue: Setting up a new laptop on your first day
+------------------------------------------------
+1. Power on the laptop and connect to the CorpWiFi network or a wired connection
+2. Sign in with your company email and the temporary password from your welcome email
+3. Set a new password of at least 12 characters when prompted
+4. Enroll in MFA with an authenticator app when asked
+5. Wait for the device management agent to install the standard software; this takes 20-40 minutes and the laptop restarts twice
+6. If setup stalls for over an hour, open a ticket with it-support@company.com
+
+---
+
+Issue: Requesting a replacement laptop or a broken device
+---------------------------------------------------------
+Company laptops are refreshed every 3 years. For a broken or failing device, open a ticket with the category Hardware and say what is wrong.
+1. IT will try a remote fix first
+2. If it cannot be fixed, a loaner is shipped within 2 business days for remote employees, or available same day at the IT desk in the office
+3. Back up files to company cloud storage before sending the device back, because it will be wiped
+4. Return the old device within 14 days using the prepaid label in the box
+
+---
+
+Issue: Ordering a monitor, keyboard, mouse or headset
+-----------------------------------------------------
+1. Open the Self Service portal and choose Request Hardware
+2. Pick items from the approved catalog; standard items are approved automatically
+3. Items over 300 dollars need manager approval
+4. Delivery takes 3-5 business days; remote employees receive items at their home address
+5. Home office furniture is not ordered through IT; use the home office stipend instead
+
+---
+
+Issue: Laptop battery drains quickly or the laptop overheats
+------------------------------------------------------------
+1. Check Task Manager or Activity Monitor for apps using high CPU, and quit them
+2. Switch the power mode to Balanced or Battery Saver
+3. Keep the laptop on a hard, flat surface so that the vents are not blocked
+4. Reduce screen brightness and close unused browser tabs
+5. If the battery health shows below 80 percent, open a Hardware ticket for a battery replacement
+
+---
+
+Issue: Laptop is lost or stolen
+-------------------------------
+1. Report it to it-support@company.com and security@company.com within 1 hour
+2. IT will remotely lock and wipe the device
+3. Change your password from another device
+4. If it was stolen, file a police report and give the report number to IT
+
+---
+
+Issue: Docking station or external monitor not detected
+-------------------------------------------------------
+1. Unplug the dock power and cable, wait 30 seconds, and reconnect the power first, then the laptop cable
+2. Try a different cable or port on the laptop
+3. Press Windows key plus P (or open Displays on a Mac) and choose Extend
+4. Update the dock firmware from the Self Service portal
+5. If one monitor still fails, test it with another laptop and report the result in your ticket
