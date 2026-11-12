@@ -1,0 +1,52 @@
+EMAIL & CALENDAR
+================
+
+Issue: Outlook is not syncing new email
+-----------------------------------------
+1. Check the bottom bar: if it says "Working Offline", go to Send/Receive and turn off Work Offline
+2. Close Outlook fully and reopen it
+3. If new mail is still missing after 30 minutes, remove your account and add it again
+4. Still stuck? Contact it-support@company.com with a screenshot of the status bar
+
+---
+
+Issue: Mailbox is full
+------------------------
+- The mailbox limit is 50 GB per person
+- Empty the Deleted Items and Junk folders first
+- Use Archive to move anything older than 1 year into your online archive
+- If you are still over the limit, request a temporary increase at it-portal.company.com
+
+---
+
+Issue: Calendar events show the wrong time
+--------------------------------------------
+1. In Outlook go to Settings → Calendar → Time zone and pick your current zone
+2. Make sure your computer's own time zone setting matches
+3. Invites from other offices arrive in the organizer's time zone and convert automatically once yours is correct
+4. After travelling, restart Outlook so it picks up the new zone
+
+---
+
+Issue: Shared mailbox does not appear in Outlook
+--------------------------------------------------
+- Request access at it-portal.company.com → Access Requests → Shared Mailbox
+- After approval it can take up to 60 minutes to show up in your folder list
+- Restart Outlook if it has not appeared after an hour
+
+---
+
+Setting up out-of-office replies
+----------------------------------
+1. In Outlook choose File → Automatic Replies
+2. Select Send automatic replies and set the start and end dates
+3. Write one message for people inside the company and a separate one for external senders
+4. Name a colleague who can help while you are away
+
+---
+
+Issue: Email bounced as "message too large"
+---------------------------------------------
+- The attachment limit is 25 MB per message, including all files
+- For anything larger, upload the file to OneDrive and share the link instead
+- Zipping a file rarely helps if it is already compressed, such as video or PDFs

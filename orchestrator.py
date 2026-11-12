@@ -8,6 +8,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from config import GENERATION_MODEL, generate
+from observability import annotate, describe_text, span, trace
 from phase1_rag import format_history, generate_answer, is_relevant, retrieve
 
 SERVER_PARAMS = StdioServerParameters(command=sys.executable, args=[os.path.join(os.path.dirname(os.path.abspath(__file__)), "mcp_server.py")])
@@ -76,11 +77,18 @@ EMPLOYEE LATEST QUESTION: {query}"""
 
 
 async def call_tool(session, name, args):
-    result = await session.call_tool(name, args)
+    with span(f"tool.{name}"):
+        result = await session.call_tool(name, args)
     return result.content[0].text
 
 
 async def orchestrate(session, query, employee_name, history):
+    """Handle one employee message. Each call is one trace (see observability.py)."""
+    with trace("support_request", query=describe_text(query), turn=len(history) // 2 + 1):
+        return await _orchestrate(session, query, employee_name, history)
+
+
+async def _orchestrate(session, query, employee_name, history):
     print(f"\n{'='*55}\n  Query: {query}\n{'='*55}")
 
     # Step 1: RAG (retrieval sees history via query rewriting)
@@ -88,10 +96,12 @@ async def orchestrate(session, query, employee_name, history):
     chunks = await asyncio.to_thread(retrieve, query, history)
     rag_answer = await asyncio.to_thread(generate_answer, query, chunks, history)
     print(f"  ✓ RAG answer generated from {len(chunks)} chunks")
+    annotate(answered_from_kb=is_relevant(chunks))
 
     # Step 2: Reasoning
     print("\n[2/3] Reasoning about actions...")
-    decision = await asyncio.to_thread(decide_actions, query, rag_answer, history)
+    with span("decide"):
+        decision = await asyncio.to_thread(decide_actions, query, rag_answer, history)
 
     # Deterministic rule on top of the LLM: if the knowledge base had nothing
     # relevant, a human has to pick this up, so always open a ticket.
@@ -100,6 +110,7 @@ async def orchestrate(session, query, employee_name, history):
         decision.setdefault("ticket_priority", "medium")
         decision["reasoning"] += " (Escalated: no relevant knowledge-base content.)"
     print(f"  ✓ Decision: {decision['reasoning']}")
+    annotate(escalated=bool(decision.get("needs_ticket")), notified_slack=bool(decision.get("needs_slack")))
 
     # Step 3: Act
     print("\n[3/3] Taking actions...")

@@ -1,73 +1,33 @@
-import glob
-import os
-import re
-
 import chromadb
 from google.genai import types
 
 from config import (
     CHROMA_DIR,
+    CHUNKING,
     COLLECTION_NAME,
     DOCS_DIR,
     EMBEDDING_MODEL,
     gemini_client,
 )
+from observability import span
+from rag.chunking import chunk_documents as chunk_all
+from rag.chunking import load_documents as load_docs
 
-# Fallback window for sections that are too long to embed as one chunk.
-MAX_CHUNK_CHARS = 800
-CHUNK_OVERLAP = 100
-MIN_CHUNK_CHARS = 50
 EMBED_BATCH_SIZE = 50
 
 
 def load_documents():
-    documents = []
-    for filepath in sorted(glob.glob(os.path.join(DOCS_DIR, "*.txt"))):
-        with open(filepath, "r", encoding="utf-8") as f:
-            text = f.read()
-        documents.append({"text": text, "source": os.path.basename(filepath)})
-        print(f"Loaded: {os.path.basename(filepath)}")
+    documents = load_docs(DOCS_DIR)
+    for doc in documents:
+        print(f"Loaded: {doc['source']}")
     return documents
 
 
-def _split_long(text, max_chars=MAX_CHUNK_CHARS, overlap=CHUNK_OVERLAP):
-    """Sliding window used only when a single section exceeds max_chars."""
-    if len(text) <= max_chars:
-        return [text]
-    pieces, start = [], 0
-    while start < len(text):
-        pieces.append(text[start:start + max_chars])
-        start += max_chars - overlap
-    return pieces
-
-
-def chunk_documents(documents):
-    """Section-aware chunking.
-
-    The knowledge base is written as self-contained sections separated by
-    '---' ("Issue: VPN keeps disconnecting" + its steps). Splitting on those
-    boundaries keeps a problem and its fix in the same chunk. A fixed 500-char
-    window cut procedures mid-step and mixed unrelated issues together.
-    Only oversized sections fall back to a sliding window with overlap.
-    """
-    chunks = []
-    for doc in documents:
-        # Match only a line that is exactly '---'. The longer '-----' lines under
-        # each "Issue:" title are underlines, not separators.
-        sections = re.split(r"(?m)^---[ \t]*$", doc["text"])
-        chunk_index = 0
-        for section in sections:
-            for piece in _split_long(section.strip()):
-                piece = piece.strip()
-                if len(piece) < MIN_CHUNK_CHARS:
-                    continue
-                chunks.append({
-                    "text": piece,
-                    "id": f"{doc['source']}_chunk_{chunk_index}",
-                    "source": doc["source"],
-                })
-                chunk_index += 1
-        print(f"Created {chunk_index} chunks from {doc['source']}")
+def chunk_documents(documents, strategy=CHUNKING):
+    """Chunk with the configured strategy (see rag/chunking.py for the two options)."""
+    chunks = chunk_all(documents, strategy)
+    for source in dict.fromkeys(c["source"] for c in chunks):
+        print(f"Created {sum(c['source'] == source for c in chunks)} chunks from {source} ({strategy})")
     return chunks
 
 
@@ -87,11 +47,12 @@ class GeminiEmbeddingFunction:
         # One API call per batch instead of one per chunk.
         for i in range(0, len(texts), EMBED_BATCH_SIZE):
             batch = list(texts[i:i + EMBED_BATCH_SIZE])
-            result = gemini_client.models.embed_content(
-                model=EMBEDDING_MODEL,
-                contents=batch,
-                config=types.EmbedContentConfig(task_type=task_type),
-            )
+            with span("embed", model=EMBEDDING_MODEL, task_type=task_type, texts=len(batch)):
+                result = gemini_client.models.embed_content(
+                    model=EMBEDDING_MODEL,
+                    contents=batch,
+                    config=types.EmbedContentConfig(task_type=task_type),
+                )
             embeddings.extend(e.values for e in result.embeddings)
         return embeddings
 
@@ -122,7 +83,7 @@ def store_in_chromadb(chunks):
     collection.add(
         documents=[c["text"] for c in chunks],
         ids=[c["id"] for c in chunks],
-        metadatas=[{"source": c["source"]} for c in chunks],
+        metadatas=[{"source": c["source"], "title": c["title"], "strategy": c["strategy"]} for c in chunks],
     )
     print(f"Stored {collection.count()} chunks in ChromaDB")
 

@@ -1,57 +1,33 @@
-"""Evaluate the RAG pipeline on two separate questions:
+"""Live evaluation of the whole RAG pipeline (calls Gemini, so it needs GEMINI_API_KEY).
 
-1. RETRIEVAL  - did we fetch the right document?  (hit rate, MRR; no LLM involved)
-2. GENERATION - is the answer faithful to the context and relevant? (LLM-as-judge)
+Retrieval and generation are scored separately, so a drop in score points at the
+half that broke:
 
-Keeping them apart tells you *which* half is broken when a score drops.
+1. RETRIEVAL   hit@k and MRR on whether the retrieved text contains the fact needed
+               to answer (no LLM involved). Compare modes with --compare.
+2. GUARDRAIL   out-of-scope questions must be refused; in-scope ones must not be.
+3. GENERATION  faithfulness and answer relevancy from an LLM judge that is a
+               different model from the generator.
+
+    python evaluate_rag.py                      # everything, current RETRIEVAL_MODE
+    python evaluate_rag.py --compare            # retrieval only: dense vs bm25 vs hybrid
+    python evaluate_rag.py --min-faithfulness 0.9 --min-hit-rate 0.85   # gate: exit 1 if below
+
+The offline, API-free half of this (BM25 + chunking ablation) is evals/retrieval_eval.py.
+Rebuild the index first (python phase1_ingest.py) after changing the data or CHUNKING.
 """
+import argparse
+import json
 import re
+import sys
+from collections import defaultdict
 
 from google.genai import types
 
-from config import JUDGE_MODEL, generate
-from phase1_rag import FALLBACK_ANSWER, generate_answer, is_relevant, retrieve
-
-# expected_source: file that contains the answer (None = not in the KB at all,
-# the correct behaviour is to refuse rather than invent something).
-TEST_CASES = [
-    {
-        "question": "Can I reset my password by calling the IT hotline?",
-        "ground_truth": "No. Password reset is self-service at accounts.company.com/reset using mobile OTP. The hotline (ext. 4357) is only for urgent account unlocks.",
-        "expected_source": "vpn_and_accounts.txt",
-    },
-    {
-        "question": "Does Jira auto approve for everyone?",
-        "ground_truth": "No. Jira is auto-approved only for Engineering. Other teams wait 1 business day for approval.",
-        "expected_source": "software_and_hardware.txt",
-    },
-    {
-        "question": "My VPN keeps dropping every 20 minutes, what should I change?",
-        "ground_truth": "Set the MTU to 1300 in VPN advanced settings, disable adapter power saving, use 5GHz Wi-Fi or wired, and reinstall the client if it persists.",
-        "expected_source": "vpn_and_accounts.txt",
-    },
-    {
-        "question": "How long until I can get AWS console access?",
-        "ground_truth": "AWS Console needs Security team approval and takes 5-7 days.",
-        "expected_source": "software_and_hardware.txt",
-    },
-    {
-        "question": "My second monitor isn't showing anything",
-        "ground_truth": "Check the cable at both ends, try another cable/port, run Detect Displays in OS settings, and reboot with the monitor connected.",
-        "expected_source": "software_and_hardware.txt",
-    },
-    {
-        "question": "I got locked out after typing my password wrong too many times",
-        "ground_truth": "Accounts lock after 5 failed attempts. Wait 15 minutes for auto-unlock, or contact IT / call ext. 4357 for an urgent unlock.",
-        "expected_source": "vpn_and_accounts.txt",
-    },
-    # Out-of-scope: the system should refuse, not hallucinate.
-    {
-        "question": "What is the company's parental leave policy?",
-        "ground_truth": FALLBACK_ANSWER,
-        "expected_source": None,
-    },
-]
+from config import JUDGE_MODEL, RETRIEVAL_MODE, TOP_K, generate
+from evals.retrieval_eval import first_hit_rank, load_dataset, summarize
+from observability import trace
+from phase1_rag import MODES, generate_answer, is_relevant, retrieve
 
 JUDGE_PROMPT = """You are a strict evaluator for a RAG system. Score two metrics from 0.0 to 1.0.
 
@@ -104,52 +80,120 @@ def mean(values):
     return sum(values) / len(values) if values else float("nan")
 
 
-def run_evaluation():
-    print("=== RAG Evaluation — IT Support Copilot ===\n")
+def mean(values):
+    values = [v for v in values if v is not None]
+    return sum(values) / len(values) if values else float("nan")
 
-    hits, reciprocal_ranks, faith, rel, refusals_ok = [], [], [], [], []
 
-    for i, test in enumerate(TEST_CASES, 1):
-        q = test["question"]
-        print(f"[{i}/{len(TEST_CASES)}] {q}")
+def evaluate_retrieval(dataset, mode, k=TOP_K):
+    """Retrieval hit@k / MRR and guardrail behaviour for one retrieval mode."""
+    ranks_by_type = defaultdict(list)
+    refused_ok, false_refusals, misses = [], [], []
+    for case in dataset:
+        chunks = retrieve(case["question"], mode=mode)
+        if case["answer_span"] is None:
+            refused_ok.append(0.0 if is_relevant(chunks) else 1.0)
+            continue
+        rank = first_hit_rank([c["text"] for c in chunks], case["answer_span"])
+        ranks_by_type[case["type"]].append(rank)
+        false_refusals.append(0.0 if is_relevant(chunks) else 1.0)
+        if rank is None:
+            misses.append(case["id"])
+    result = summarize(ranks_by_type, k)
+    result.update(
+        out_of_scope_refused=round(mean(refused_ok), 3),
+        in_scope_wrongly_refused=round(mean(false_refusals), 3),
+        misses=misses,
+    )
+    return result
 
-        chunks = retrieve(q)
-        answer = generate_answer(q, chunks)
+
+def compare_modes(dataset, k=TOP_K):
+    results = {mode: evaluate_retrieval(dataset, mode, k) for mode in MODES}
+    print(f"\n{'mode':<9}{'hit@' + str(k):>8}{'MRR':>8}{'OOS refused':>13}{'wrongly refused':>17}   by type (hit@{k})")
+    for mode, r in results.items():
+        by_type = "  ".join(f"{t}={s[f'hit@{k}']:.2f}" for t, s in r["by_type"].items())
+        print(f"{mode:<9}{r['overall'][f'hit@{k}']:>8.3f}{r['overall']['mrr']:>8.3f}"
+              f"{r['out_of_scope_refused']:>13.3f}{r['in_scope_wrongly_refused']:>17.3f}   {by_type}")
+    return results
+
+
+def run_evaluation(dataset, mode, with_generation=True):
+    print(f"=== RAG evaluation: retrieval mode = {mode}, {len(dataset)} cases ===\n")
+    retrieval = evaluate_retrieval(dataset, mode)
+    k = TOP_K
+    o = retrieval["overall"]
+    print(f"  Retrieval hit@{k}:        {o[f'hit@{k}']:.3f}   (MRR {o['mrr']:.3f})")
+    print(f"  Out-of-scope refused:    {retrieval['out_of_scope_refused']:.3f}")
+    print(f"  In-scope wrongly refused:{retrieval['in_scope_wrongly_refused']:>6.3f}")
+    if retrieval["misses"]:
+        print(f"  Retrieval misses: {', '.join(retrieval['misses'])}")
+    summary = {"mode": mode, "retrieval": retrieval}
+    if not with_generation:
+        return summary
+
+    faith, rel, by_type = [], [], defaultdict(list)
+    for i, case in enumerate(dataset, 1):
+        with trace("eval_case", case=case["id"], mode=mode):
+            chunks = retrieve(case["question"], mode=mode)
+            answer = generate_answer(case["question"], chunks)
         context = "\n---\n".join(c["text"] for c in chunks)
-
-        expected = test["expected_source"]
-        if expected:
-            sources = [c["source"] for c in chunks]
-            rank = sources.index(expected) + 1 if expected in sources else None
-            hits.append(1.0 if rank else 0.0)
-            reciprocal_ranks.append(1.0 / rank if rank else 0.0)
-            print(f"  Retrieval:  {'HIT at rank ' + str(rank) if rank else 'MISS'} "
-                  f"(top score {chunks[0]['score']})")
-        else:
-            # Should be refused: low similarity => guardrail short-circuits.
-            ok = not is_relevant(chunks)
-            refusals_ok.append(1.0 if ok else 0.0)
-            print(f"  Refusal:    {'correct' if ok else 'WRONG - answered an out-of-scope question'} "
-                  f"(top score {chunks[0]['score']})")
-
-        print(f"  Answer: {answer[:300].strip()}...")
-        scores = judge(q, answer, context, test["ground_truth"])
+        scores = judge(case["question"], answer, context, case["ground_truth"])
         faith.append(scores["faithfulness"])
         rel.append(scores["answer_relevancy"])
-        print(f"  Faithfulness: {scores['faithfulness']}   Relevancy: {scores['answer_relevancy']}")
-        print(f"  Judge: {scores['reasoning']}\n")
+        by_type[case["type"]].append(scores["faithfulness"])
+        print(f"[{i}/{len(dataset)}] {case['id']:<16} faithfulness={scores['faithfulness']}  "
+              f"relevancy={scores['answer_relevancy']}  {scores['reasoning']}")
 
-    print("=" * 55)
-    print("  Results")
-    print("=" * 55)
-    print(f"  Retrieval hit rate@{len(chunks)}:   {mean(hits):.3f}")
-    print(f"  Retrieval MRR:           {mean(reciprocal_ranks):.3f}")
-    print(f"  Out-of-scope refusals:   {mean(refusals_ok):.3f}")
-    print(f"  Avg faithfulness:        {mean(faith):.3f}")
-    print(f"  Avg answer relevancy:    {mean(rel):.3f}")
-    print("=" * 55)
-    print("  Note: a handful of cases and an LLM judge give a rough signal, not a benchmark.")
+    summary["generation"] = {
+        "faithfulness": round(mean(faith), 3),
+        "answer_relevancy": round(mean(rel), 3),
+        "faithfulness_by_type": {t: round(mean(v), 3) for t, v in sorted(by_type.items())},
+    }
+    print(f"\n  Avg faithfulness:        {summary['generation']['faithfulness']:.3f}")
+    print(f"  Avg answer relevancy:    {summary['generation']['answer_relevancy']:.3f}")
+    print(f"  (judge model: {JUDGE_MODEL}; a small hand-written set and an LLM judge give a rough signal, not a benchmark)")
+    return summary
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--mode", choices=MODES, default=RETRIEVAL_MODE)
+    parser.add_argument("--compare", action="store_true", help="retrieval only, all three modes side by side")
+    parser.add_argument("--retrieval-only", action="store_true", help="skip generation and the judge")
+    parser.add_argument("--json", help="write the results to this path")
+    parser.add_argument("--min-hit-rate", type=float)
+    parser.add_argument("--min-faithfulness", type=float)
+    parser.add_argument("--min-relevancy", type=float)
+    args = parser.parse_args(argv)
+
+    dataset = load_dataset()
+    if args.compare:
+        results = compare_modes(dataset)
+        if args.json:
+            with open(args.json, "w", encoding="utf-8") as f:
+                json.dump(results, f, indent=2)
+        return 0
+
+    summary = run_evaluation(dataset, args.mode, with_generation=not args.retrieval_only)
+    if args.json:
+        with open(args.json, "w", encoding="utf-8") as f:
+            json.dump(summary, f, indent=2)
+
+    failed = []
+    hit = summary["retrieval"]["overall"][f"hit@{TOP_K}"]
+    if args.min_hit_rate is not None and hit < args.min_hit_rate:
+        failed.append(f"hit@{TOP_K} {hit} < {args.min_hit_rate}")
+    gen = summary.get("generation")
+    if gen and args.min_faithfulness is not None and gen["faithfulness"] < args.min_faithfulness:
+        failed.append(f"faithfulness {gen['faithfulness']} < {args.min_faithfulness}")
+    if gen and args.min_relevancy is not None and gen["answer_relevancy"] < args.min_relevancy:
+        failed.append(f"answer relevancy {gen['answer_relevancy']} < {args.min_relevancy}")
+    if failed:
+        print("\nRegression gate FAILED: " + "; ".join(failed), file=sys.stderr)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    run_evaluation()
+    sys.exit(main())
