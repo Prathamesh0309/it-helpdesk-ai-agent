@@ -24,7 +24,7 @@ def load_documents():
 
 
 def chunk_documents(documents, strategy=CHUNKING):
-    """Chunk with the configured strategy (see rag/chunking.py for the two options)."""
+    """Chunk with the configured strategy (see rag/chunking.py for the options)."""
     chunks = chunk_all(documents, strategy)
     for source in dict.fromkeys(c["source"] for c in chunks):
         print(f"Created {sum(c['source'] == source for c in chunks)} chunks from {source} ({strategy})")

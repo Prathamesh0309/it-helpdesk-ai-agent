@@ -11,6 +11,8 @@ half that broke:
 
     python evaluate_rag.py                      # everything, current RETRIEVAL_MODE
     python evaluate_rag.py --compare            # retrieval only: dense vs bm25 vs hybrid
+    python evaluate_rag.py --calibrate          # tune MIN_RELEVANCE on dev, verify on test
+    python evaluate_rag.py --split test         # score only the held-out split
     python evaluate_rag.py --min-faithfulness 0.9 --min-hit-rate 0.85   # gate: exit 1 if below
 
 The offline, API-free half of this (BM25 + chunking ablation) is evals/retrieval_eval.py.
@@ -25,9 +27,17 @@ from collections import defaultdict
 from google.genai import types
 
 from config import JUDGE_MODEL, RETRIEVAL_MODE, TOP_K, generate
-from evals.retrieval_eval import first_hit_rank, load_dataset, summarize
+from evals.retrieval_eval import (
+    SPLITS,
+    calibrate_threshold,
+    case_rank,
+    case_spans,
+    load_dataset,
+    select_cases,
+    summarize,
+)
 from observability import trace
-from phase1_rag import MODES, generate_answer, is_relevant, retrieve
+from phase1_rag import MODES, dense_search, generate_answer, is_relevant, retrieve
 
 JUDGE_PROMPT = """You are a strict evaluator for a RAG system. Score two metrics from 0.0 to 1.0.
 
@@ -80,21 +90,16 @@ def mean(values):
     return sum(values) / len(values) if values else float("nan")
 
 
-def mean(values):
-    values = [v for v in values if v is not None]
-    return sum(values) / len(values) if values else float("nan")
-
-
 def evaluate_retrieval(dataset, mode, k=TOP_K):
     """Retrieval hit@k / MRR and guardrail behaviour for one retrieval mode."""
     ranks_by_type = defaultdict(list)
     refused_ok, false_refusals, misses = [], [], []
     for case in dataset:
-        chunks = retrieve(case["question"], mode=mode)
-        if case["answer_span"] is None:
+        chunks = retrieve(case["question"], history=case.get("history"), mode=mode)
+        if not case_spans(case):
             refused_ok.append(0.0 if is_relevant(chunks) else 1.0)
             continue
-        rank = first_hit_rank([c["text"] for c in chunks], case["answer_span"])
+        rank = case_rank([c["text"] for c in chunks], case)
         ranks_by_type[case["type"]].append(rank)
         false_refusals.append(0.0 if is_relevant(chunks) else 1.0)
         if rank is None:
@@ -118,6 +123,35 @@ def compare_modes(dataset, k=TOP_K):
     return results
 
 
+def best_dense_score(case):
+    """Highest cosine similarity the dense retriever finds for the case's question."""
+    from phase1_rag import rewrite_query
+    query = rewrite_query(case["question"], case.get("history") or [])
+    scores = [c["score"] for c in dense_search(query, TOP_K) if c.get("score") is not None]
+    return max(scores, default=0.0)
+
+
+def calibrate(dataset):
+    """Sweep the relevance threshold on the dev split, then report how it holds up on test."""
+    from config import MIN_RELEVANCE
+
+    def scores(split, answerable):
+        cases = [c for c in select_cases(dataset, split=split) if bool(case_spans(c)) == answerable]
+        return [best_dense_score(c) for c in cases]
+
+    dev_in, dev_out = scores("dev", True), scores("dev", False)
+    result = calibrate_threshold(dev_in, dev_out)
+    t = result["threshold"]
+    test_in, test_out = scores("test", True), scores("test", False)
+    answered = sum(1 for x in test_in if x >= t) / len(test_in) if test_in else float("nan")
+    refused = sum(1 for x in test_out if x < t) / len(test_out) if test_out else float("nan")
+    print(f"current MIN_RELEVANCE = {MIN_RELEVANCE}")
+    print(f"dev-optimal threshold = {t}  (answers {result['best']['answered']:.3f} of in-scope, "
+          f"refuses {result['best']['refused']:.3f} of out-of-scope)")
+    print(f"same threshold on test: answers {answered:.3f} of in-scope, refuses {refused:.3f} of out-of-scope")
+    return {"current": MIN_RELEVANCE, "dev": result, "test": {"answered": answered, "refused": refused}}
+
+
 def run_evaluation(dataset, mode, with_generation=True):
     print(f"=== RAG evaluation: retrieval mode = {mode}, {len(dataset)} cases ===\n")
     retrieval = evaluate_retrieval(dataset, mode)
@@ -135,8 +169,8 @@ def run_evaluation(dataset, mode, with_generation=True):
     faith, rel, by_type = [], [], defaultdict(list)
     for i, case in enumerate(dataset, 1):
         with trace("eval_case", case=case["id"], mode=mode):
-            chunks = retrieve(case["question"], mode=mode)
-            answer = generate_answer(case["question"], chunks)
+            chunks = retrieve(case["question"], history=case.get("history"), mode=mode)
+            answer = generate_answer(case["question"], chunks, case.get("history"))
         context = "\n---\n".join(c["text"] for c in chunks)
         scores = judge(case["question"], answer, context, case["ground_truth"])
         faith.append(scores["faithfulness"])
@@ -161,6 +195,9 @@ def main(argv=None):
     parser.add_argument("--mode", choices=MODES, default=RETRIEVAL_MODE)
     parser.add_argument("--compare", action="store_true", help="retrieval only, all three modes side by side")
     parser.add_argument("--retrieval-only", action="store_true", help="skip generation and the judge")
+    parser.add_argument("--split", choices=SPLITS, help="evaluate only the dev or the test split")
+    parser.add_argument("--calibrate", action="store_true",
+                        help="find the MIN_RELEVANCE that best separates answerable questions (dev), then check it on test")
     parser.add_argument("--json", help="write the results to this path")
     parser.add_argument("--min-hit-rate", type=float)
     parser.add_argument("--min-faithfulness", type=float)
@@ -168,6 +205,13 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     dataset = load_dataset()
+    if args.calibrate:
+        results = calibrate(dataset)
+        if args.json:
+            with open(args.json, "w", encoding="utf-8") as f:
+                json.dump(results, f, indent=2)
+        return 0
+    dataset = select_cases(dataset, split=args.split)
     if args.compare:
         results = compare_modes(dataset)
         if args.json:
